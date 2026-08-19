@@ -1,0 +1,961 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Design tokens (from Figma: White Label B2C)
+--------------------------------------------------------------------------- */
+@theme {
+  --color-brand: #4951ef;
+  --color-surface: #f3f4f6;
+
+  --color-neutral-200: #e5e7eb;
+  --color-neutral-300: #e7e7e7;
+  --color-neutral-400: #9da4ae;
+  --color-neutral-500: #6c737f;
+  --color-neutral-600: #4c4c4c;
+  --color-neutral-800: #1f2a37;
+  --color-neutral-900: #111927;
+
+  --radius-softer: 16px;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  /* Circular Std is a licensed face. Drop the webfont into app/fonts and add it
+     to the front of this stack; everything below picks it up automatically. */
+  --font-display: "Circular Std", var(--font-inter), ui-sans-serif, system-ui,
+    sans-serif;
+}
+
+html,
+body {
+  background: #fff;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------------------
+   Rotating world backdrop + cursor spotlight mask
+
+   The dot map is one seamless tile (643.32 x 304, extracted from the Figma
+   `Union`, which was that same tile repeated 3x). Because the tile loops, we
+   repeat it on the x-axis and translate by exactly one tile width — that reads
+   as an endlessly rotating globe with no seam and no JS per frame.
+--------------------------------------------------------------------------- */
+@property --spot-size {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --spot-x {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 50%;
+}
+@property --spot-y {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 50%;
+}
+
+.spotlight-host {
+  --spot-size: 0px;
+  --spot-x: 50%;
+  --spot-y: 50%;
+  /* Only the radius eases — the position must track the cursor 1:1 or it lags. */
+  transition: --spot-size 450ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.spotlight-host[data-spotlight="on"] {
+  --spot-size: var(--spot-radius, 210px);
+}
+
+.world-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(
+    circle var(--spot-size) at var(--spot-x) var(--spot-y),
+    #000 0%,
+    rgba(0, 0, 0, 0.72) 55%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    circle var(--spot-size) at var(--spot-x) var(--spot-y),
+    #000 0%,
+    rgba(0, 0, 0, 0.72) 55%,
+    transparent 100%
+  );
+}
+
+/* Vertically centres the 304px-tall map band inside the hero, matching Figma. */
+.world-rail {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: var(--world-tile-h);
+  margin-top: calc(var(--world-tile-h) / -2);
+}
+
+.world-track {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* Two spare tiles of overhang so the shifted track never exposes an edge. */
+  width: calc(100% + var(--world-tile-w) * 2);
+  background-color: var(--world-ink, #000100);
+  opacity: var(--world-opacity, 0.34);
+
+  -webkit-mask-image: var(--world-tile);
+  mask-image: var(--world-tile);
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-size: var(--world-tile-w) var(--world-tile-h);
+  mask-size: var(--world-tile-w) var(--world-tile-h);
+  /* -239.22px reproduces the exact horizontal phase shown in the Figma frame. */
+  -webkit-mask-position: -239.22px center;
+  mask-position: -239.22px center;
+
+  animation: world-rotate var(--world-duration, 90s) linear infinite;
+  will-change: transform;
+}
+
+@keyframes world-rotate {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(calc(var(--world-tile-w) * -1), 0, 0);
+  }
+}
+
+/* No cursor to follow: hold a static reveal roughly where the Figma frame
+   shows one, so the pattern still reads on touch devices. */
+@media (hover: none) {
+  .spotlight-host {
+    --spot-size: 240px;
+    --spot-x: 78%;
+    --spot-y: 55%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-track {
+    animation: none;
+  }
+  .spotlight-host {
+    transition: none;
+  }
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Hero collapse
+
+   There is only one hero: it morphs in place from the expanded search panel
+   into the compact sticky bar. Nothing is cross-faded against a second copy.
+
+   This is a triggered transition, not a scroll-scrubbed one: useHeroCollapse
+   flips --collapse-p between 0 and 1 the moment scrolling starts (or returns
+   to the top), and CSS carries it the rest of the way. Further scrolling
+   doesn't move the animation along.
+
+   ONE property is animated, and everything else is derived from it. That's
+   what keeps the morph synchronised: card height, field width, tab strip,
+   mode icon and Ask AI all read --collapse-p, so they share a single clock
+   and a single easing curve and nothing can lag behind. (An earlier version
+   transitioned three properties on separate durations and delays, which is
+   exactly why the mode icon turned up last.)
+
+   Transitioning a custom property at all requires @property — an inherited
+   custom property is otherwise just a string, with nothing to interpolate.
+   The transition has to sit on :root specifically, since that's the element
+   useHeroCollapse writes to: it animates at its point of definition, then
+   cascades an already-interpolated value down to every calc() reading it.
+
+   --cf / --ci are the two derived shaping curves. They overlap deliberately —
+   in the reference the tab strip is still visible while the mode icon is
+   already fading in, which is what makes it read as one morph rather than a
+   hand-off.
+
+   --chat-p is the exact same technique, one custom property later: it drives
+   the Ask AI -> Enter -> fullscreen-chat morph (see useHeroChat), with its own
+   pair of derived curves --chat-out / --chat-in shaping what leaves and what
+   arrives. It shares this :root transition list — same duration, same
+   easing — deliberately, so the chat morph feels identical to the collapse
+   morph rather than a different animation bolted on beside it.
+--------------------------------------------------------------------------- */
+@property --collapse-p {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --chat-p {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --view-p {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+:root {
+  transition:
+    --collapse-p 1s cubic-bezier(0.4, 0, 0.2, 1),
+    --chat-p 1s cubic-bezier(0.4, 0, 0.2, 1),
+    --view-p 1s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* --cf/--ci/--chat-out/--chat-in shape OPACITY ONLY, never anything that
+     affects layout. Every width/height stays a straight linear function of
+     its driving p, so content can only ever travel one direction. Putting
+     Ask AI's width on --cf (faster) was what made "Who" drift right then
+     back: the button freed space quicker than the container took it away. */
+
+  /* Leaves: tab labels, Ask AI, the world backdrop. Gone by ~60%. */
+  --cf: clamp(0, var(--collapse-p) * 1.7, 1);
+  /* Arrives: the mode icon in the field. Starts at 20%, settled by ~70%. */
+  --ci: clamp(0, (var(--collapse-p) - 0.2) / 0.5, 1);
+
+  /* Leaves: the logo/search/actions row. Gone by ~55%. */
+  --chat-out: clamp(0, var(--chat-p) * 1.8, 1);
+  /* Arrives: the chat view. Starts at 35%, settled by 100%. */
+  --chat-in: clamp(0, (var(--chat-p) - 0.35) / 0.65, 1);
+
+  /* Search page map<->list toggle. --view-p: 0 = map view, 1 = list view. */
+  /* Leaves: the map column, the top amenity-chip row. Gone by ~55%. */
+  --view-out: clamp(0, var(--view-p) * 1.8, 1);
+  /* Arrives: the filter sidebar. Starts at 35%, settled by 100%. */
+  --view-in: clamp(0, (var(--view-p) - 0.35) / 0.65, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    transition: none;
+  }
+}
+
+/* Reserves the hero's height in normal flow, since the card itself is fixed
+   and out of flow. This has to shrink/grow in step with --collapse-p and
+   --chat-p, same as everything else — a static height here left a dead gap
+   between the collapsed bar and the content below it once the fixed card
+   had resized but the reserved space hadn't (and would do the same to the
+   footer once chat mode grew the card past it).
+
+   --hero-card-h factors out the part .hero-shell and .hero-card share, so
+   they're defined FROM each other rather than as two formulas that merely
+   happen to agree at rest. Growing .hero-shell without growing .hero-card by
+   the exact same amount is exactly the bug that shipped once already (a
+   hardcoded 104 instead of 128) — a shared term makes that class of bug
+   impossible instead of just fixed.
+
+   328 -> 128: .hero-fixed adds a constant 24px (p-3, top + bottom) around
+   .hero-card, so .hero-shell reserves the card's own travel plus that 24px —
+   not the card's bare height, which under-reserves by exactly 24px and lets
+   the fixed bar's padding sit on top of the content below it.
+
+   100dvh flat on the chat target, not 100dvh-minus-something: the sibling
+   right after .hero-shell in the page is Container (Continue Searching,
+   Travelers also booked, ...), not Footer — Footer is at the very end,
+   several sections later. A first version subtracted a guessed footer
+   height, on the assumption Footer was the next thing down; the real effect
+   was a gap the height of that guess where Container's own top peeked
+   through at the bottom of the screen instead of nothing. "The hero takes
+   the whole page" means flush to the viewport, full stop. */
+@media (min-width: 1024px) {
+  :root {
+    /* .hero-fixed's own p-3 (24px, top+bottom) is constant now — the chat
+       target has to leave room for it instead of assuming it's animated
+       away, or the card overflows the viewport by exactly that 24px. */
+    --hero-card-h: calc(
+      (304px - 200px * var(--collapse-p, 0)) * (1 - var(--chat-p, 0)) +
+        (100dvh - 24px) * var(--chat-p, 0)
+    );
+  }
+  .hero-shell {
+    /* 24px is .hero-fixed's padding, unconditional now (it no longer
+       animates toward 0 for chat mode — margins stay constant always). */
+    height: calc(var(--hero-card-h) + 24px);
+  }
+  .hero-fixed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 40;
+  }
+  .hero-card {
+    height: var(--hero-card-h);
+  }
+
+  /*
+   * The collapsed bar, clicked open (Figma 33133:39419) — forces this
+   * SAME .hero-card back to its resting, fully-expanded proportions,
+   * locally, regardless of the real (still-collapsed) scroll position or
+   * chat state. Switches instantly, on purpose — unlike the scroll-driven
+   * collapse elsewhere in this file, nothing here transitions these
+   * overrides, so the modal snaps open/closed rather than morphing.
+   * Three separate overrides, because none of them share a mechanism:
+   *
+   *   --collapse-p: 0 reaches every rule in this file that reads
+   *   var(--collapse-p) DIRECTLY at ITS OWN element — .ai-field's
+   *   height/padding/gap, .hero-primary-field's flex-grow, .ai-actions'
+   *   gap, .hero-search-col's max-width/padding/gap, .hero-mode-row's
+   *   height, .hero-mode-pill's transform, .hero-tab-label's max-width,
+   *   .hero-mode-chip's max-width, .hero-askai's max-width, .ai-panel's
+   *   padding, .hero-panel-slot's min-height. Custom-property inheritance
+   *   means those all pick up THIS closer value instead of :root's.
+   *
+   *   --cf: 0 and --ci: 0 exist because OPACITY on several of those SAME
+   *   elements does NOT read var(--collapse-p) directly — .hero-mode-pill,
+   *   .hero-tab-label and .hero-askai read var(--cf); .hero-mode-chip
+   *   reads var(--ci) — and --cf/--ci are, like --hero-card-h below, each
+   *   declared ONCE at :root with a formula baked to :root's OWN
+   *   --collapse-p. A local --collapse-p override never reaches into that
+   *   formula, so without this, --collapse-p:0 alone leaves the mode-tabs
+   *   pill correctly SIZED but stuck at opacity:0 (invisible), while the
+   *   small in-field mode icon — meant to fade out as the pill returns —
+   *   stays stuck at opacity:1 (visible on top of it). Found by measuring
+   *   live: .hero-mode-pill really did report opacity "0" here before this
+   *   fix. 0 is --cf/--ci's own value at collapse-p 0, same as height below.
+   *
+   *   height can't be reached the same way either: .hero-card's height
+   *   reads var(--hero-card-h), which has the identical problem as
+   *   --cf/--ci above (one more :root-declared derived property), so it
+   *   gets the same fix — the plain number this whole family resolves to
+   *   at rest, rather than the unreachable formula. 304px is
+   *   --hero-card-h's own output at collapse-p 0, chat-p 0 — see the
+   *   comment above its declaration for where that number comes from.
+   *
+   * Deliberately NOT touching .hero-shell (which reserves this height in
+   * normal document flow): .hero-fixed is already position:fixed, so
+   * growing .hero-card alone makes it visually overlay whatever's below —
+   * exactly the floating-modal effect wanted here — without the rest of
+   * the page reflowing underneath it.
+   */
+  .hero-card[data-modal-open="true"] {
+    --collapse-p: 0;
+    --cf: 0;
+    --ci: 0;
+    height: 304px;
+    /* No card chrome behind the widget while it's a modal — just the
+       search bar and mode-tabs pill floating on the page's own blur (see
+       .search-modal-backdrop in HeroSection.tsx), matching Figma
+       33133:39419, which shows no grey fill or inset around them. */
+    background: transparent;
+    padding: 0;
+  }
+
+  /* --cf: 0 above (needed so the mode-tabs pill/labels/Ask AI aren't stuck
+     at opacity:0 — see the block above) has a side effect here: this rule
+     reads --cf too, so at --cf: 0 it would resolve to fully opaque and the
+     rotating world-dots pattern would show through behind the search bar.
+     Figma's modal reference has no such texture, so it's turned off
+     directly for this one case rather than adjusting --cf again (which
+     other rules still depend on reading as 0). */
+  .hero-card[data-modal-open="true"] .hero-backdrop {
+    opacity: 0;
+  }
+
+  /* .hero-fixed stays bg-white everywhere else — only the modal's own
+     floating card sits on the surface-gray tone (Figma 33133:39419). */
+  .hero-fixed[data-modal-open="true"] {
+    background-color: var(--color-surface);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Only the collapse morph's smoothness is motion — staying pinned to the
+     top while scrolling is a static layout property, not an animation, so
+     it stays on even here (previously this block also dropped .hero-fixed
+     to position:static and .hero-shell to height:auto, which unstuck the
+     whole header — a real regression for anyone with Reduce Motion on, not
+     a reduced-motion accommodation). :root's own transition:none above
+     doesn't reach this — the --collapse-p/height transition on .hero-card
+     is declared there specifically, not at :root (see the comment on that
+     rule for why). */
+  .hero-card {
+    transition: none;
+  }
+}
+
+/* The size interpolations themselves live at the very end of this file — they
+   override .ai-panel / .ai-field, which are declared below. */
+
+/* ---------------------------------------------------------------------------
+   Manual <-> AI search transition
+
+   Both variants stay mounted and cross-fade in a grid stack, so there is
+   something to tween between — swapping the DOM outright would just pop. The
+   container morphs (height, radius, gap) around them. The reserved panel slot
+   already holds the hero at a fixed height, so the panel is free to grow.
+--------------------------------------------------------------------------- */
+:root {
+  --ai-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ai-dur: 380ms;
+}
+
+.ai-panel {
+  border-radius: 30px;
+  transition: border-radius var(--ai-dur) var(--ai-ease);
+}
+.ai-panel[data-ai="true"] {
+  border-bottom-left-radius: 24px;
+}
+
+/* Fixed at 60px in both states — Figma specs the manual field at 56px and
+   the AI field at 60px, but animating between them was the layout shift the
+   Where/When/Who row visibly jumped through on toggle. One constant height
+   removes it entirely rather than just easing it. */
+.ai-field {
+  height: 60px;
+}
+
+/* Where's share of the row, unconditional default (also what sub-1024px
+   viewports get, since the collapse system below never runs there). Lives
+   in CSS rather than an inline style so it can interpolate smoothly with
+   --collapse-p below — an inline style can't be overridden by a class rule
+   at all (max specificity short of !important), and a value that only
+   READS collapse-p via React state would jump in one step disconnected
+   from the 1s transition carrying everything else in this same morph. */
+.hero-primary-field {
+  flex-grow: 1.7;
+}
+
+/* Stacked variants: the hidden one keeps its box (so nothing reflows) but is
+   pulled out of the tab order by `inert` on the element itself. */
+.ai-swap {
+  opacity: 0;
+  translate: 0 4px;
+  pointer-events: none;
+  transition:
+    opacity 200ms ease,
+    translate var(--ai-dur) var(--ai-ease);
+}
+.ai-swap[data-show="true"] {
+  opacity: 1;
+  translate: none;
+  pointer-events: auto;
+}
+
+.ai-actions {
+  gap: 8px;
+  transition: gap var(--ai-dur) var(--ai-ease);
+}
+.ai-actions[data-ai="true"] {
+  gap: 10px;
+}
+
+/* Collapsed to zero height in manual mode, so the panel grows into the
+   suggestions rather than the row appearing all at once. 40px = 32px pill + the
+   8px top padding it carries. */
+.ai-suggest {
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    height var(--ai-dur) var(--ai-ease),
+    opacity 220ms ease;
+}
+.ai-suggest[data-open="true"] {
+  height: 40px;
+  opacity: 1;
+}
+
+.ai-toggle {
+  transition:
+    width var(--ai-dur) var(--ai-ease),
+    background-color 300ms ease,
+    border-color 300ms ease;
+}
+
+/* When/Who collapse into this on AI activation. flex-grow (2 open, 0 closed)
+   is what shrinks it — not a measured pixel width, so there's no race
+   against web-font loading the way an earlier JS-measured max-width had, and
+   not a fixed/auto content size either, so PrimaryField's sibling grow-ratio
+   still gets real leftover space to share with it rather than seizing
+   everything (see CollapsibleGroup). margin-left carries its own leading gap
+   so the row doesn't leave a stray gap once the group is gone. */
+.ai-collapse {
+  flex-grow: 2;
+  margin-left: 20px;
+  opacity: 1;
+  transition:
+    flex-grow var(--ai-dur) var(--ai-ease),
+    margin-left var(--ai-dur) var(--ai-ease),
+    opacity 220ms ease;
+}
+.ai-collapse[data-open="false"] {
+  flex-grow: 0;
+  margin-left: 0;
+  opacity: 0;
+}
+
+/* The List/Map toggle's active-tab background — one pill sliding to the
+   measured position of whichever button is active (see ViewToggle in
+   SearchResultsHeader.tsx), rather than each tab's own background popping
+   on/off. Same settle curve as the Ask AI panel morph above. */
+.view-toggle-pill {
+  transition:
+    left var(--ai-dur) var(--ai-ease),
+    width var(--ai-dur) var(--ai-ease);
+}
+
+/* Where/When/Who's active-field background — same "one pill sliding to a
+   measured position" technique as .view-toggle-pill above, just measured
+   off whichever trip field is currently selected instead of a List/Map
+   toggle. */
+.trip-field-pill {
+  transition:
+    left var(--ai-dur) var(--ai-ease),
+    width var(--ai-dur) var(--ai-ease);
+}
+
+/* The trip-field dropdown (see FieldDropdownPortal) — one persistent panel
+   that resizes and repositions to match whichever field's content is
+   showing, instead of unmounting one dropdown and mounting a different one.
+   Content swaps instantly; only the box around it morphs. */
+.trip-dropdown-panel {
+  transition:
+    left var(--ai-dur) var(--ai-ease),
+    width var(--ai-dur) var(--ai-ease),
+    height var(--ai-dur) var(--ai-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-panel,
+  .ai-field,
+  .ai-swap,
+  .ai-actions,
+  .ai-suggest,
+  .ai-toggle,
+  .ai-collapse,
+  .view-toggle-pill,
+  .trip-field-pill,
+  .trip-dropdown-panel {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Ask AI activation aura
+
+   A one-shot gradient sweep around the search widget when AI mode turns on,
+   using the same four stops as the Ask AI button. A conic gradient rotates
+   behind a heavy blur; a mask keeps the middle clear so the glow rides the
+   widget's edges and never washes out the text.
+--------------------------------------------------------------------------- */
+@property --ai-aura-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.ai-aura {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  /* Softens the hairline so it reads as a fading glow rather than a drawn
+     border. Blur spreads a 1px line's intensity, so going much past ~2px starts
+     washing it out — raise --ai-aura-thickness alongside it if you want more. */
+  filter: blur(var(--ai-aura-softness, 3px));
+  animation: ai-aura-fade var(--ai-aura-duration, 2s) ease-out forwards;
+}
+
+/* Border-box XOR content-box leaves a ring of even thickness that follows the
+   widget's corner radii — unlike a radial mask, this holds its shape on a wide,
+   short box, so the middle stays clear and the text stays readable. */
+.ai-aura__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  padding: var(--ai-aura-thickness, 1px);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.ai-aura__ring::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 150%;
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  background: conic-gradient(
+    from var(--ai-aura-angle),
+    #592fff 0%,
+    #e32fff 25%,
+    #ff2600 50%,
+    #ff2f75 75%,
+    #592fff 100%
+  );
+  /* Rotation speed is independent of --ai-aura-duration on purpose: the sweep
+     should keep the same slow pace regardless of how long the aura stays
+     visible. At a 4s period the 1s fade only ever shows a quarter-turn — a
+     gentle drift rather than a full lap — which reads as "spinning" without
+     racing round the widget. Two iterations is just runway past the fade. */
+  animation: ai-aura-spin var(--ai-aura-spin-period, 2s) linear 2;
+}
+
+@keyframes ai-aura-spin {
+  to {
+    --ai-aura-angle: 360deg;
+  }
+}
+
+@keyframes ai-aura-fade {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  65% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-aura,
+  .ai-aura::before {
+    animation: none;
+  }
+}
+
+/* Monochrome icons are recoloured through a mask so one asset serves every
+   state (white on the active pill, grey elsewhere). */
+.icon-mask {
+  display: block;
+  background-color: currentColor;
+  -webkit-mask-image: var(--icon);
+  mask-image: var(--icon);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+/* ---------------------------------------------------------------------------
+   Hero collapse geometry
+
+   Last in the file on purpose: these override .ai-panel and .ai-field above.
+
+   Every size interpolates on --collapse-p, so the hero's height falls out of
+   its contents shrinking rather than being animated separately — the two can
+   never disagree. Column height at p=0: 40+52+8+116+40 = 256 (+48 card
+   padding = 304, +24 gutter = 328). At p=1: 0+0+0+56+0 = 56 (+48 = 104,
+   +24 = 128). Those are the two Figma frames exactly.
+
+   No transitions: scroll position is the timeline, so a transition would only
+   put lag between the finger and the pixels.
+--------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  .hero-search-col {
+    max-width: calc(874px - 331px * var(--collapse-p));
+    padding-block: calc(40px * (1 - var(--collapse-p)));
+    gap: calc(8px * (1 - var(--collapse-p)));
+  }
+
+  /* The row's height collapses so the card can close up, while the pill
+     inside scales down toward the field below it — so the tabs read as
+     shrinking *into* the search widget rather than just being clipped away,
+     which is what the reference does. */
+  .hero-mode-row {
+    height: calc(52px * (1 - var(--collapse-p)));
+    overflow: hidden;
+  }
+
+  .hero-mode-pill {
+    transform: scale(calc(1 - 0.4 * var(--collapse-p)));
+    transform-origin: center bottom;
+    opacity: calc(1 - var(--cf));
+  }
+
+  .hero-panel-slot {
+    min-height: calc(var(--panel-slot, 116px) - 60px * var(--collapse-p));
+  }
+
+  .ai-panel {
+    padding: calc(8px * (1 - var(--collapse-p)));
+  }
+
+  .ai-field {
+    height: calc(60px - 4px * var(--collapse-p));
+    padding-left: calc(24px - 16px * var(--collapse-p));
+    /* Right side is a flat 8px in both states (the JSX's own pr-2 already
+       does this — no override needed here), unlike the left, which does
+       change with collapse. */
+    gap: calc(16px * (1 - var(--collapse-p)));
+  }
+
+  /* 1.7 at rest tightening to 1.0 fully collapsed, handing more of the row
+     to When/Who (flex-grow 2 between them, unchanged) as the bar narrows.
+     Measured, not guessed: at collapse-p 1 with the old fixed 1.7, Where's
+     own input sat at 166px wide against "Edit destinations"'s real 106px
+     need — 60px of slack — while When/Who each had only 67px against
+     "Edit guests"'s 71px, "Add guests"'s 73px: already truncating before
+     collapsed placeholders even existed. This trade give the tight side
+     the room the loose side didn't need. */
+  .hero-primary-field {
+    flex-grow: calc(1.7 - 0.7 * var(--collapse-p));
+  }
+
+  /* .hero-askai shrinks to max-width: 0 as the bar collapses (below), but a
+     zero-width flex child still claims its own share of the parent's gap —
+     without this, the search button sat a full 8px short of .ai-field's
+     padding-right above, no matter how tightly that padding itself was
+     tuned. Interpolating this gap down in step with everything else closes
+     that gap right along with the width that made it moot. */
+  .ai-actions {
+    gap: calc(8px * (1 - var(--collapse-p)));
+  }
+
+  /* Labels shed first, so each tab shrinks back to its icon before the strip
+     itself closes. */
+  .hero-tab-label {
+    display: inline-block;
+    overflow: hidden;
+    max-width: calc(120px * (1 - var(--collapse-p)));
+    opacity: calc(1 - var(--cf));
+    white-space: nowrap;
+  }
+
+  /* The selected icon's landing slot inside the field, opening as the strip
+     above it closes. */
+  .hero-mode-chip {
+    display: flex;
+    overflow: hidden;
+    max-width: calc(40px * var(--collapse-p));
+    margin-right: calc(8px * var(--collapse-p));
+    opacity: var(--ci);
+  }
+
+  /* overflow: hidden only turns on once genuinely collapsed (see the
+     data-collapsed rule below) — not unconditionally. The button's hover
+     bloom is a blurred glow that bleeds a good 20-30px past its own box
+     (that's what a soft glow is); with the box max-width clamped to the
+     button's own ~94px there was almost no margin for that bleed, so it got
+     hard-cropped on hover even at rest, with --collapse-p at 0 the whole
+     time. max-width alone can't fix this — a flex item stays sized to its
+     content regardless of how generous max-width is, it only ever clamps a
+     value that would otherwise be *larger*, never pads a smaller one out —
+     and widening the box for real (via width/padding) shifts Where/When/Who
+     over by the difference, a real regression of its own. Scoping the clip
+     to when it's actually needed sidesteps both problems at once. */
+  .hero-askai {
+    display: flex;
+    max-width: calc(96px * (1 - var(--collapse-p)));
+    opacity: calc(1 - var(--cf));
+  }
+  .hero-askai[data-collapsed="true"] {
+    overflow: hidden;
+  }
+
+  /* Hidden if either the sticky-bar collapse or the chat morph is under way
+     — a rotating world map has nothing to say behind a chat transcript
+     either. */
+  .hero-backdrop {
+    opacity: calc((1 - var(--cf)) * (1 - var(--chat-out)));
+  }
+
+  /* Logo and auth actions never move or fade for chat mode OR the
+     scroll-collapse (Figma 33160:232154 keeps them exactly where they
+     always are) — .hero-brand/.hero-actions carry no --collapse-p or
+     --chat-p rule at all, on purpose: only the search column's own content
+     (tabs + field, below, and the card's own height around it) moves. */
+
+  /* The mode tabs + search field fading out as chat opens, inside
+     SearchPanel's own 876px column — not the full hero-row width. */
+  .hero-search-content {
+    opacity: calc(1 - var(--chat-out));
+    pointer-events: auto;
+  }
+  .hero-search-content[inert] {
+    pointer-events: none;
+  }
+
+  /* The chat view arriving on top of it, inside that same 876px column
+     (.hero-search-stage) rather than the full hero-card — no extra padding
+     here, so its content lines up with the same edges the tabs/field
+     already sit at. */
+  .hero-chat-view {
+    opacity: var(--chat-in);
+    pointer-events: none;
+  }
+  .hero-chat-view[data-show="true"] {
+    pointer-events: auto;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Search results map pins
+
+   Mapbox markers take an arbitrary DOM element, so the price pill itself is
+   styled here rather than as a React component — SearchMapInner just sets
+   className/textContent on a plain <button>.
+--------------------------------------------------------------------------- */
+.search-map-pin {
+  cursor: pointer;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 999px;
+  background: white;
+  padding: 6px 10px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-neutral-900);
+  box-shadow: 0 1px 2px 0 rgba(16, 24, 40, 0.05);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+.search-map-pin:hover {
+  border-color: var(--color-neutral-400);
+}
+.search-map-pin--active {
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+  color: white;
+}
+/* Hovering a card in the list — lighter than --active (clicked/selected) so
+   the two stay distinguishable if they land on different pins at once.
+   z-index lifts it above overlapping neighbours so it's actually visible. */
+.search-map-pin--hovered {
+  position: relative;
+  z-index: 1;
+  border-color: var(--color-brand);
+  color: var(--color-brand);
+  transform: scale(1.1);
+}
+
+/* Mapbox wraps whatever DOM the popup is given in its own chrome (a padded,
+   shadowed, rounded content box, plus a triangular tip) — MapHotelCard
+   already brings its own rounded-26 card look, so that default chrome would
+   just double up. Stripped down to a bare positioning box; the tip is
+   dropped entirely rather than restyled, since the card's own drop shadow
+   already reads as "floating over the map" without it. */
+.map-hotel-popup .mapboxgl-popup-content {
+  padding: 0;
+  border-radius: 26px;
+  background: transparent;
+  box-shadow:
+    0px 12px 16px -4px rgba(16, 24, 40, 0.08),
+    0px 4px 6px -2px rgba(16, 24, 40, 0.03);
+}
+.map-hotel-popup .mapboxgl-popup-tip {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Search page map<->list morph
+
+   Same technique as the hero collapse/chat morphs: one triggered custom
+   property (--view-p, see useSearchView) with a transition declared once on
+   :root, and every size/opacity here is a plain function of it — nothing
+   scroll-scrubbed, nothing hand-timed against a second element.
+
+   Sidebar and map both stay mounted at all times (their own components
+   never unmount on toggle) — only their wrapping column's width/opacity
+   animates. The list column carries no formula of its own: it's a plain
+   flex-1 sandwiched between the other two, so it fills whatever space their
+   shrinking/growing widths leave behind for free, the same way flexbox
+   already solves "give me the remaining space" without a third calc().
+
+   The filter sidebar's own 260px width stays constant — it's the WRAPPER
+   that animates 0->260px with overflow:hidden clipping it, so the panel's
+   own content (accordions, checkboxes) never itself reflows/squashes during
+   the transition, only reveals/hides. The map, by contrast, is left to
+   genuinely resize with its wrapper (Mapbox's own ResizeObserver keeps the
+   canvas in sync), which reads as the map actually shrinking rather than
+   being clipped.
+--------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  .search-layout {
+    padding-left: calc(12px + 108px * var(--view-p));
+    padding-right: calc(12px + 108px * var(--view-p));
+  }
+
+  /* Never grows or shrinks — a fixed 260px revealed/hidden by the wrapper's
+     own basis animating, same clip-not-reflow approach as the width note
+     above. */
+  .search-sidebar {
+    flex-grow: 0;
+    flex-shrink: 0;
+    flex-basis: calc(260px * var(--view-p));
+    margin-right: calc(24px * var(--view-p));
+    opacity: var(--view-in);
+    overflow: hidden;
+  }
+
+  /* The one flexible column: grow:1 in map mode means it — not the list —
+     absorbs whatever space the 696px-capped list doesn't use, exactly like
+     the original bare `flex-1` map did. grow:0 in list mode makes it rigid
+     at its own collapsing-to-0 basis, so it doesn't compete with the list
+     for the space the sidebar just gave up. */
+  .search-map-col {
+    flex-grow: calc(1 - var(--view-p));
+    flex-shrink: 1;
+    flex-basis: calc(696px * (1 - var(--view-p)));
+    margin-left: calc(24px * (1 - var(--view-p)));
+    opacity: calc(1 - var(--view-out));
+    overflow: hidden;
+  }
+
+  /* Rigid at 696px in map mode (grow:0 — mustn't compete with the map for
+     surplus space) and the sole grower in list mode (grow:1 — absorbs
+     whatever the map just gave up), swapping roles with .search-map-col in
+     lockstep off the same --view-p. */
+  .search-list-col {
+    flex-grow: var(--view-p);
+    flex-shrink: 1;
+    flex-basis: 696px;
+    min-width: 0;
+  }
+
+  /* Collapses to nothing in list mode — the sidebar takes over its job.
+     36px matches the row's own content height (h-9 chips). */
+  .search-chip-row {
+    height: calc(36px * (1 - var(--view-p)));
+    margin-top: calc(24px * (1 - var(--view-p)));
+    opacity: calc(1 - var(--view-out));
+    overflow: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-layout,
+  .search-sidebar,
+  .search-map-col,
+  .search-chip-row {
+    transition: none;
+  }
+}
