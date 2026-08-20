@@ -44,7 +44,7 @@ export function HeroSection({
 } = {}) {
   const { ref, handlers } = useSpotlight<HTMLDivElement>();
   const { collapsed } = useHeroCollapse<HTMLElement>(forceCollapsed);
-  const { open: chatOpen, openChat, closeChat } = useHeroChat();
+  const { open: chatOpen, messages: chatMessages, loading: chatLoading, openChat, closeChat, sendMessage } = useHeroChat();
 
   /**
    * The collapsed bar, clicked open (Figma 33133:39419) — the exact same
@@ -162,8 +162,11 @@ export function HeroSection({
             <SearchPanel
               collapsed={collapsed}
               chatOpen={chatOpen}
+              chatMessages={chatMessages}
+              chatLoading={chatLoading}
               onOpenChat={openChat}
               onCloseChat={closeChat}
+              onSendMessage={sendMessage}
               initialCriteria={initialCriteria}
               modalOpen={modalOpen}
               onOpenModal={() => setModalOpen(true)}

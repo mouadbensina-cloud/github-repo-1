@@ -58,7 +58,7 @@ export function PropertyCarousel({
       <div
         ref={trackRef}
         onScroll={sync}
-        className="no-scrollbar -mx-5 flex snap-x snap-mandatory gap-5 overflow-x-auto scroll-smooth px-5"
+        className="no-scrollbar -mx-5 flex snap-x snap-mandatory gap-5 overflow-x-auto scroll-smooth px-5 sm:mx-0 sm:px-0"
       >
         {properties.map((property) => (
           <div

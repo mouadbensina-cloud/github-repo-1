@@ -41,8 +41,8 @@ export type Hotel = {
 
 /**
  * Placeholder results for the search page, lifted from the Figma "Layout on
- * map" frame. Static for now, same as the home page's lib/home-data.ts —
- * swap for the search endpoint later and nothing downstream changes.
+ * map" frame. Static for now — swap for the search endpoint later and
+ * nothing downstream changes.
  */
 export const SEARCH_RESULTS: Hotel[] = [
   {

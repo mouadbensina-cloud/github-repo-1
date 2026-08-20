@@ -110,14 +110,6 @@ export async function liteApiRequest<T = unknown>(
   }
 }
 
-/** GET /data/hotel?hotelId={hotelId} — a single hotel's static content. */
-export function getHotel(hotelId: string, options?: { timeoutMs?: number }) {
-  return liteApiRequest("/data/hotel", {
-    query: { hotelId },
-    timeoutMs: options?.timeoutMs,
-  });
-}
-
 export type LiteApiHotelImage = {
   url: string;
   urlHd?: string;
@@ -240,6 +232,24 @@ export type LiteApiRateOption = {
     }>;
   };
   cancellationPolicies?: {
+    /**
+     * Penalty tiers. Each entry's `cancelTime` is when that penalty STARTS
+     * applying, so the earliest one is the deadline free cancellation runs up
+     * to — see cancellationBadge() in lib/hotel-data.ts.
+     *
+     * `cancelTime` is "YYYY-MM-DD HH:mm:ss" with a SEPARATE `timezone` field
+     * (GMT on every live sample) — not an ISO instant, so it must not be
+     * handed to `new Date()` directly.
+     */
+    cancelPolicyInfos?: Array<{
+      cancelTime?: string;
+      amount?: number;
+      currency?: string;
+      type?: string;
+      timezone?: string;
+    }>;
+    hotelRemarks?: string[];
+    /** LiteAPI documents NRFN as meaning ANY portion is non-refundable. */
     refundableTag?: "RFN" | "NRFN" | string;
   };
 };
@@ -372,4 +382,230 @@ export async function searchPlaces(
     },
   );
   return response.data ?? [];
+}
+
+/* ---------------------------------------------------------------------------
+   GET /data/hotel — one hotel's full static content, for the details page.
+
+   Confirmed live on 2026-08-19 against hotelId=lp1deeb (ibis Styles Paris
+   Bercy), a 40KB response. What the details page actually needs, and the
+   surprises worth knowing:
+
+     hotelDescription   HTML, not plain text ("<p><strong>Convenient
+                        Location</strong><br>...") — must be sanitized before
+                        rendering, never dangerouslySetInnerHTML'd raw.
+     starRating         integer (3). Distinct from `rating` (7.5), which is
+                        the 0-10 guest score, and from `reviewCount` (12148).
+     location           { latitude, longitude } — NESTED, unlike the flat
+                        latitude/longitude that /hotels/rates' hotels[] uses.
+     hotelFacilities    string[] (47 entries) — same list as `facilities`,
+                        which is the [{ facilityId, name }] object form.
+     hotelImages        82 entries here, vs the 5 the card carousel takes.
+     sentiment_analysis THE find: { pros[], cons[], categories[] } where each
+                        category is { name, rating, description }. That is a
+                        1:1 fit for BOTH the "Smart highlights" blocks (name +
+                        description) and the "Review highlights" score row
+                        (name + rating), so neither section needs an extra
+                        request. Snake_case here; the SAME payload comes back
+                        as camelCase `sentimentAnalysis` from /data/reviews.
+                        Absent on hotels with too few reviews to analyse —
+                        both sections hide themselves when it is.
+--------------------------------------------------------------------------- */
+
+export type LiteApiSentimentCategory = {
+  name: string;
+  /** 0-10, one decimal in practice (e.g. 8.36). */
+  rating: number;
+  description: string;
+};
+
+export type LiteApiSentimentAnalysis = {
+  pros?: string[];
+  cons?: string[];
+  categories?: LiteApiSentimentCategory[];
+};
+
+export type LiteApiRoomPhoto = {
+  url: string;
+  hd_url?: string;
+  imageDescription?: string;
+  mainPhoto?: boolean;
+};
+
+/**
+ * A room as static CONTENT (size, capacity, photos) — not a bookable offer.
+ * See mapRoomOffers() in app/api/hotels/[id]/rates/route.ts for why these
+ * can't be joined to priced rates by id.
+ */
+export type LiteApiStaticRoom = {
+  id: number;
+  roomName: string;
+  description?: string;
+  /** Nullable in practice — one of the four rooms on lp1deeb had no size. */
+  roomSizeSquare?: number | null;
+  /** Unit string is NOT consistent: "sqm" on two rooms, "m2" on another, and
+   * "" on the one with a null size. Normalize, don't render raw. */
+  roomSizeUnit?: string;
+  maxAdults?: number;
+  maxChildren?: number;
+  maxOccupancy?: number;
+  bedTypes?: { quantity: number; bedType: string; bedSize?: string }[];
+  roomAmenities?: { amenitiesId: number; name: string }[];
+  photos?: LiteApiRoomPhoto[];
+};
+
+export type LiteApiHotelDetail = {
+  id: string;
+  name: string;
+  hotelDescription?: string;
+  hotelImportantInformation?: string;
+  hotelImages?: LiteApiHotelImage[];
+  main_photo?: string;
+  thumbnail?: string;
+  country?: string;
+  city?: string;
+  zip?: string;
+  address?: string;
+  starRating?: number;
+  location?: { latitude?: number; longitude?: number };
+  hotelFacilities?: string[];
+  facilities?: { facilityId: number; name: string }[];
+  rooms?: LiteApiStaticRoom[];
+  rating?: number;
+  reviewCount?: number;
+  sentiment_analysis?: LiteApiSentimentAnalysis;
+  sentiment_updated_at?: string;
+};
+
+/**
+ * A 40KB payload and a slower call than the rates one it runs beside, so the
+ * timeout is raised well above the 4s default — this is the request the whole
+ * page's chrome waits on.
+ */
+export async function getHotelDetail(
+  hotelId: string,
+  options?: { timeoutMs?: number; next?: NextFetchRequestConfig },
+): Promise<LiteApiHotelDetail | null> {
+  const response = await liteApiRequest<{ data?: LiteApiHotelDetail }>(
+    "/data/hotel",
+    {
+      query: { hotelId },
+      timeoutMs: options?.timeoutMs ?? 9000,
+      next: options?.next,
+    },
+  );
+  return response.data ?? null;
+}
+
+/* ---------------------------------------------------------------------------
+   GET /data/reviews — the review cards themselves.
+
+   Confirmed live on 2026-08-19 (hotelId=lp1deeb): { data[], total,
+   sentimentAnalysis }. total was 12148 against a data[] of the requested 5,
+   so `total` is the real corpus size, not the page length.
+
+   Two things that shape the UI:
+     - Reviews come in MIXED languages (the first five were es, en-gb, it, fr,
+       es). Each carries its own `language`. Passing `language` would have the
+       API translate, but the docs cap that at 10 reviews returned — not worth
+       it for a 4-card strip.
+     - `headline` is frequently an EMPTY string, and pros/cons are separate
+       fields rather than one body. The card composes whatever is present.
+--------------------------------------------------------------------------- */
+
+export type LiteApiReview = {
+  /** 0-10 for this single review. */
+  averageScore?: number;
+  country?: string;
+  /** e.g. "solo_traveller", "family_with_children". */
+  type?: string;
+  name?: string;
+  date?: string;
+  /** Often "". */
+  headline?: string;
+  language?: string;
+  pros?: string;
+  cons?: string;
+  source?: string;
+};
+
+export type LiteApiReviewsResponse = {
+  data?: LiteApiReview[];
+  total?: number;
+  /** camelCase here; the same object is snake_case on /data/hotel. */
+  sentimentAnalysis?: LiteApiSentimentAnalysis;
+};
+
+export function getHotelReviews(
+  hotelId: string,
+  options?: {
+    limit?: number;
+    timeoutMs?: number;
+    next?: NextFetchRequestConfig;
+  },
+): Promise<LiteApiReviewsResponse> {
+  return liteApiRequest<LiteApiReviewsResponse>("/data/reviews", {
+    query: { hotelId, limit: options?.limit ?? 12 },
+    timeoutMs: options?.timeoutMs ?? 8000,
+    next: options?.next,
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   GET /data/hotelTypes — the fixed reference list of property types
+   ("Hotels", "Apartments", "Villas", ...) LiteAPI classifies every listing
+   under. Confirmed live on 2026-08-20: { data: [{ id, name }, ...] }, 52
+   entries, id 0 named "Not Available" (not a real category — see
+   getPropertyTypes in lib/property-types.ts, which drops it).
+
+   Static-content endpoint like /data/hotel, but even more so: this is a
+   fixed enum on LiteAPI's side, not something that changes per hotel or per
+   search, so it's cached far harder than anything else in this file.
+--------------------------------------------------------------------------- */
+
+export type LiteApiHotelType = {
+  id: number;
+  name: string;
+};
+
+export async function getHotelTypes(options?: {
+  timeoutMs?: number;
+  next?: NextFetchRequestConfig;
+}): Promise<LiteApiHotelType[]> {
+  const response = await liteApiRequest<{ data?: LiteApiHotelType[] }>(
+    "/data/hotelTypes",
+    {
+      timeoutMs: options?.timeoutMs,
+      next: options?.next,
+    },
+  );
+  return response.data ?? [];
+}
+
+/* ---------------------------------------------------------------------------
+   GET /data/hotels — a hotel LISTING (static content, like /data/hotel),
+   not a rates search: no checkin/checkout/occupancy involved, and its
+   `total` is a real count of every hotel LiteAPI has on file for the place,
+   not "how many have live availability" the way /hotels/rates' result count
+   is. That's exactly the number a "well known destinations" homepage card
+   wants ("2,001 properties") — a rates search would need invented dates just
+   to answer a question that has nothing to do with dates.
+
+   Confirmed live on 2026-08-20 against placeId alone (no countryCode, despite
+   the docs listing it as required): { data: [...], hotelIds: [...], place:
+   {...}, total: 2001 } for Paris. limit is honored for `data`'s length
+   without affecting `total`, so limit:1 gets the count at a fraction of the
+   payload.
+--------------------------------------------------------------------------- */
+
+export async function getHotelCountForPlace(
+  placeId: string,
+  options?: { timeoutMs?: number; next?: NextFetchRequestConfig },
+): Promise<number | null> {
+  const response = await liteApiRequest<{ total?: number }>("/data/hotels", {
+    query: { placeId, limit: 1 },
+    timeoutMs: options?.timeoutMs,
+    next: options?.next,
+  });
+  return typeof response.total === "number" ? response.total : null;
 }

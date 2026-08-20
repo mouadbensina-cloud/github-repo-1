@@ -1,21 +1,31 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, useTransition } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { formatRangeLabel } from "@/components/hero/DateRangePicker";
 import { HeroSection } from "@/components/hero/HeroSection";
+import { guestsLabelFor } from "@/components/hero/WhoDropdown";
 import { Footer } from "@/components/layout/Footer";
-import { FilterSidebar } from "@/components/search/FilterSidebar";
+import {
+  FilterSidebar,
+  applyFilters,
+  INITIAL_FILTERS,
+  type Filters,
+} from "@/components/search/FilterSidebar";
 import { HotelCard } from "@/components/search/HotelCard";
 import { SearchMap } from "@/components/search/SearchMap";
 import { SearchResultsHeader } from "@/components/search/SearchResultsHeader";
 import { useSearchView } from "@/components/search/useSearchView";
 import {
+  fromISODate,
   PARSE_FAILURE_COPY,
   parseSearchParams,
   type ParseFailure,
   type SearchCriteria,
 } from "@/lib/search-params";
+import { hotelHref } from "@/lib/hotel-params";
+import { saveRecentSearch } from "@/lib/recent-search";
 import type { Hotel } from "@/lib/search-data";
 
 /** How many cards render up front, and how many more each "See more" click
@@ -105,17 +115,14 @@ function ResultsBody({
   const [state, setState] = useState<SearchState>({ status: "loading" });
   const [retryCount, setRetryCount] = useState(0);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  // Revealing a batch is a render, not a fetch — useTransition reports how
-  // long that render actually takes rather than showing a made-up delay.
   const [revealing, startReveal] = useTransition();
 
-  /**
-   * Sorting is page state rather than something read from the URL: it's a
-   * view preference, not search criteria, and putting it in the link would
-   * mean a shared URL also imposed the sender's sort. It's listed here so
-   * the reset below covers it — see the note on that effect.
-   */
   const [sort] = useState<"price-asc">("price-asc");
+  const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS);
+  const handleFiltersChange = useCallback((f: Filters) => {
+    setFilters(f);
+    setVisibleCount(PAGE_SIZE);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,6 +151,31 @@ function ResultsBody({
           total: result.total,
           destination: result.destination,
         });
+
+        // "Continue searching" on the home page reads this back — see
+        // lib/recent-search.ts. Only the first 3 hotels that actually HAVE a
+        // photo, not just hotels[0..2]: a hotel with no matched image would
+        // otherwise put a grey swatch in the stack even though two other
+        // results a few rows down have real ones.
+        saveRecentSearch({
+          category: "Stays",
+          destination: result.destination,
+          dateLabel: formatRangeLabel({
+            start: fromISODate(criteria.checkin),
+            end: fromISODate(criteria.checkout),
+          }),
+          guestLabel: guestsLabelFor(
+            criteria.rooms.map((room) => ({
+              adults: room.adults,
+              childAges: room.childAges,
+            })),
+          ),
+          images: result.hotels
+            .map((hotel) => hotel.image)
+            .filter((image): image is string => Boolean(image))
+            .slice(0, 3),
+          href: `/search?${query}`,
+        });
       })
       .catch((error: Error) => {
         if (!cancelled) setState({ status: "error", message: error.message });
@@ -165,11 +197,15 @@ function ResultsBody({
    */
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
+    setFilters(INITIAL_FILTERS);
   }, [query, retryCount, sort]);
 
-  const hotels = state.status === "success" ? state.hotels : [];
-  // null while loading or failed — see SearchResultsHeader's `count` prop.
-  const total = state.status === "success" ? state.total : null;
+  const allHotels = state.status === "success" ? state.hotels : [];
+  const hotels = useMemo(
+    () => applyFilters(allHotels, filters),
+    [allHotels, filters],
+  );
+  const total = state.status === "success" ? hotels.length : null;
   const destination =
     state.status === "success" ? state.destination : criteria.place.name;
 
@@ -182,7 +218,11 @@ function ResultsBody({
         className="search-sidebar hidden lg:sticky lg:top-[140px] lg:block lg:h-[calc(100dvh-160px)]"
         inert={isMap}
       >
-        <FilterSidebar />
+        <FilterSidebar
+          hotels={allHotels}
+          filters={filters}
+          onFiltersChange={handleFiltersChange}
+        />
       </div>
 
       <div className="search-list-col flex w-full flex-col gap-3">
@@ -206,14 +246,45 @@ function ResultsBody({
 
           {state.status === "unresolved-place" ? <UnresolvedPlace /> : null}
 
-          {state.status === "success" && hotels.length === 0 ? (
+          {state.status === "success" && allHotels.length === 0 ? (
             <ResultsEmpty destination={destination} />
+          ) : null}
+
+          {state.status === "success" &&
+          allHotels.length > 0 &&
+          hotels.length === 0 ? (
+            <div className="flex flex-col items-start gap-2 rounded-[24px] border border-neutral-200 bg-white p-6">
+              <p className="font-display text-[16px] font-semibold text-neutral-900">
+                No hotels match your filters
+              </p>
+              <p className="font-display text-[14px] text-neutral-500">
+                Try adjusting or clearing your filters to see more results.
+              </p>
+              <button
+                type="button"
+                onClick={() => handleFiltersChange(INITIAL_FILTERS)}
+                className="mt-1 cursor-pointer rounded-[8px] border border-neutral-200 px-4 py-2 font-display text-[13px] font-medium text-neutral-900 transition-colors hover:bg-surface"
+              >
+                Clear all filters
+              </button>
+            </div>
           ) : null}
 
           {visibleHotels.map((hotel, index) => (
             <HotelCard
               key={hotel.id}
               hotel={hotel}
+              // Carries the current dates and guests into the details page,
+              // so it can price rooms immediately instead of opening on its
+              // "add your dates" state.
+              href={hotelHref(hotel.id, {
+                stay: {
+                  checkin: criteria.checkin,
+                  checkout: criteria.checkout,
+                  rooms: criteria.rooms,
+                },
+                place: criteria.place,
+              })}
               // Staggered against the position within its own batch, so a
               // revealed batch doesn't re-stagger from the top of the list.
               imageFetchDelayMs={(index % PAGE_SIZE) * 150}

@@ -26,7 +26,48 @@ export type IconName =
   | "clock"
   | "building"
   | "minus"
-  | "plus";
+  | "plus"
+  // Hotel facilities (see FACILITY_CATALOG in lib/hotel-data.ts, which is what
+  // decides which of these a given hotel actually shows).
+  | "wifi"
+  | "car"
+  | "pool"
+  | "paw"
+  | "utensils"
+  | "wine"
+  | "dumbbell"
+  | "spa"
+  | "snowflake"
+  | "ac"
+  | "users"
+  | "tree"
+  | "hanger"
+  | "elevator"
+  | "bus"
+  | "accessible"
+  | "luggage"
+  | "ban"
+  | "bell"
+  | "tv"
+  | "lock"
+  // Room offer cards + review-category scores.
+  | "square-scale"
+  | "shield-check"
+  | "shield-ban"
+  | "sparkles"
+  | "smile"
+  | "component"
+  | "tag"
+  | "bed-double"
+  | "images"
+  // Room-level amenities (see ROOM_AMENITY_ICONS in lib/hotel-data.ts) —
+  // distinct from the hotel-wide facility set above.
+  | "shower"
+  | "phone"
+  | "wind"
+  | "flame"
+  | "fridge"
+  | "sofa";
 
 /**
  * Renders an exported Figma icon as a CSS mask filled with `currentColor`, so a

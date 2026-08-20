@@ -1,17 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
 import { imageStyle } from "@/components/ui/placeholder";
 import type { Hotel } from "@/lib/search-data";
 
 export function HotelCard({
   hotel,
+  href,
   onShowOnMap,
   onHoverChange,
   imageFetchDelayMs = 0,
 }: {
   hotel: Hotel;
+  /** Details-page link, built by the results page so the current dates and
+   * guests travel with it (see hotelHref) — "See availability" is the sole
+   * way into the page; the title itself is plain text now, since two link
+   * targets on one card is redundant and it wasn't the one that read as
+   * clickable. Omitted -> the button renders disabled rather than linking
+   * nowhere, which is what keeps this card usable from the mock-data story
+   * too. */
+  href?: string;
   onShowOnMap?: (id: string) => void;
   /** Lets the map highlight this hotel's pin while its card is hovered,
    * without selecting it (no flyTo, no popup) — that stays a click/"Show on
@@ -266,20 +276,40 @@ export function HotelCard({
                   {priceNote}
                 </span>
               </div>
-              <button
-                type="button"
-                className="flex shrink-0 cursor-pointer items-center justify-center gap-1 rounded-[80px] border border-brand bg-brand py-2 pr-[13px] pl-[15px] shadow-[0px_1px_2px_0px_rgba(16,24,40,0.05)] transition-opacity hover:opacity-90"
-              >
-                <span className="font-display text-[12px] font-semibold tracking-[-0.096px] whitespace-nowrap text-white">
-                  See availability
-                </span>
-                <Icon
-                  name="arrow-right"
-                  size={20}
-                  className="text-white"
-                  style={{ rotate: "-90deg" }}
-                />
-              </button>
+              {/* The details-page link now that the title isn't one — see
+                  href's own doc comment for the mock-data fallback. */}
+              {href ? (
+                <Link
+                  href={href}
+                  className="flex shrink-0 cursor-pointer items-center justify-center gap-1 rounded-[80px] border border-brand bg-brand py-2 pr-[13px] pl-[15px] shadow-[0px_1px_2px_0px_rgba(16,24,40,0.05)] transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-brand/40 focus-visible:outline-none"
+                >
+                  <span className="font-display text-[12px] font-semibold tracking-[-0.096px] whitespace-nowrap text-white">
+                    See availability
+                  </span>
+                  <Icon
+                    name="arrow-right"
+                    size={20}
+                    className="text-white"
+                    style={{ rotate: "-90deg" }}
+                  />
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="flex shrink-0 cursor-not-allowed items-center justify-center gap-1 rounded-[80px] border border-brand bg-brand py-2 pr-[13px] pl-[15px] opacity-40 shadow-[0px_1px_2px_0px_rgba(16,24,40,0.05)]"
+                >
+                  <span className="font-display text-[12px] font-semibold tracking-[-0.096px] whitespace-nowrap text-white">
+                    See availability
+                  </span>
+                  <Icon
+                    name="arrow-right"
+                    size={20}
+                    className="text-white"
+                    style={{ rotate: "-90deg" }}
+                  />
+                </button>
+              )}
             </div>
           </div>
         </div>

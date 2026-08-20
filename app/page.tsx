@@ -1,29 +1,30 @@
 import { HeroSection } from "@/components/hero/HeroSection";
-import {
-  ContinueSearching,
-  type LastSearch,
-} from "@/components/search/ContinueSearching";
+import { RecentSearchSection } from "@/components/search/RecentSearchSection";
 import { PropertyCarousel } from "@/components/property/PropertyCarousel";
 import { CategoryGrid } from "@/components/home/CategoryGrid";
 import { Footer } from "@/components/layout/Footer";
 import { Container } from "@/components/ui/Container";
-import {
-  NEARBY_HOTELS,
-  NEED_IDEAS,
-  STAY_LIKE_A_LOCAL,
-  TRAVELERS_ALSO_BOOKED,
-} from "@/lib/home-data";
+import { getExploreTiles } from "@/lib/explore-locations";
+import { getFeaturedHotels } from "@/lib/featured-hotels";
+import { getNearbyHotels } from "@/lib/nearby-hotels";
+import { getPropertyTypeTiles } from "@/lib/property-types";
 
-// Placeholder until the last-search endpoint exists — swap this for the fetched
-// result and the section renders it as-is.
-const LAST_SEARCH: LastSearch = {
-  category: "Stays",
-  destination: "Paris",
-  dateLabel: "Aug 18 - 19",
-  guestLabel: "1 guest",
-};
+export default async function Home() {
+  // Every real LiteAPI property type, each illustrated by its own Pexels
+  // photo — see lib/property-types.ts. Fetched here (a Server Component)
+  // rather than through a client-side API route: nothing about this list is
+  // interactive or user-specific, so there's no reason to ship a second
+  // round trip for content that's already ready by the time the page
+  // renders. Same reasoning for the featured/nearby hotels and "Need
+  // ideas?" destinations just below.
+  const [propertyTypeTiles, featuredHotels, nearbyHotels, exploreTiles] =
+    await Promise.all([
+      getPropertyTypeTiles(),
+      getFeaturedHotels(),
+      getNearbyHotels(),
+      getExploreTiles(),
+    ]);
 
-export default function Home() {
   return (
     <div className="flex min-h-screen flex-col bg-white">
       <main className="flex-1">
@@ -31,23 +32,21 @@ export default function Home() {
 
         {/* Figma spaces every home-page section 40px apart. */}
         <Container className="mt-2 flex flex-col gap-10 pb-14">
-          <div className="flex justify-center">
-            <ContinueSearching search={LAST_SEARCH} />
-          </div>
+          <RecentSearchSection />
 
           <PropertyCarousel
             title="Travelers also booked"
-            properties={TRAVELERS_ALSO_BOOKED}
+            properties={featuredHotels}
           />
 
           <CategoryGrid
             title="Stay like a local in any location"
-            tiles={STAY_LIKE_A_LOCAL}
+            tiles={propertyTypeTiles}
           />
 
-          <PropertyCarousel title="Nearby hotels" properties={NEARBY_HOTELS} />
+          <PropertyCarousel title="Nearby hotels" properties={nearbyHotels} />
 
-          <CategoryGrid title="Need ideas ?" tiles={NEED_IDEAS} radius={16} />
+          <CategoryGrid title="Need ideas ?" tiles={exploreTiles} radius={16} />
         </Container>
       </main>
 

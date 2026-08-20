@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { ChatView } from "./ChatView";
+import type { ChatMessage } from "./useHeroChat";
 import {
   DateRangePicker,
   formatRangeLabel,
@@ -78,8 +79,11 @@ type ActiveField = "where" | "when" | "who" | null;
 export function SearchPanel({
   collapsed = false,
   chatOpen = false,
+  chatMessages = [],
+  chatLoading = false,
   onOpenChat,
   onCloseChat,
+  onSendMessage,
   initialCriteria,
   modalOpen = false,
   onOpenModal,
@@ -87,8 +91,11 @@ export function SearchPanel({
 }: {
   collapsed?: boolean;
   chatOpen?: boolean;
+  chatMessages?: ChatMessage[];
+  chatLoading?: boolean;
   onOpenChat?: () => void;
   onCloseChat?: () => void;
+  onSendMessage?: (content: string) => void;
   /** Prefills every field from a deep link. Passed down from the results
    * page, which has already parsed and validated the URL for its own fetch —
    * so the form and the results can never disagree about what was searched. */
@@ -204,7 +211,12 @@ export function SearchPanel({
   const [whoPillStyle, setWhoPillStyle] = useState<CSSProperties | null>(
     null,
   );
-  const whoPillVisible = whoHovered && activeField !== "who";
+  // !effectivelyCollapsed, not !collapsed: the pinned bar shouldn't show this
+  // pill at all, but the modal it opens into is the full-size form and
+  // should still get normal hover feedback — same distinction TripField's
+  // own suppressHover prop draws.
+  const whoPillVisible =
+    whoHovered && activeField !== "who" && !effectivelyCollapsed;
 
   useLayoutEffect(() => {
     if (!whoPillVisible) return;
@@ -420,11 +432,13 @@ export function SearchPanel({
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (aiOpen) {
-      // Chat mode is its own full takeover of this widget — the modal's
-      // backdrop-and-card treatment would just be a second, redundant
-      // overlay sitting behind it.
       onCloseModal?.();
-      onOpenChat?.();
+      if (query.trim()) {
+        onSendMessage?.(query);
+        setQuery("");
+      } else {
+        onOpenChat?.();
+      }
       return;
     }
     if (!canSubmit || !place || !dateRange.start || !dateRange.end) {
@@ -575,6 +589,7 @@ export function SearchPanel({
                 onOpen={() => setActiveField("where")}
                 listboxOpen={activeField === "where"}
                 collapsed={collapsed}
+                suppressHover={effectivelyCollapsed}
               />
               <CollapsibleGroup open={!aiOpen}>
                 <FieldSeparator />
@@ -586,6 +601,7 @@ export function SearchPanel({
                   buttonRef={whenFieldRef}
                   active={activeField === "when"}
                   collapsed={collapsed}
+                  suppressHover={effectivelyCollapsed}
                 />
                 <FieldSeparator />
                 <TripField
@@ -598,6 +614,7 @@ export function SearchPanel({
                   onMouseEnter={() => setWhoHovered(true)}
                   onMouseLeave={() => setWhoHovered(false)}
                   collapsed={collapsed}
+                  suppressHover={effectivelyCollapsed}
                 />
               </CollapsibleGroup>
             </div>
@@ -705,7 +722,10 @@ export function SearchPanel({
                 <button
                   key={suggestion}
                   type="button"
-                  onClick={() => setQuery(suggestion)}
+                  onClick={() => {
+                    onCloseModal?.();
+                    onSendMessage?.(suggestion);
+                  }}
                   className="flex h-8 shrink-0 items-center rounded-[800px] border border-neutral-300 bg-white px-2.5 py-0.5 text-center text-[12px] font-medium tracking-[-0.12px] text-neutral-800 transition-colors hover:border-neutral-400"
                 >
                   {suggestion}
@@ -717,7 +737,13 @@ export function SearchPanel({
           </div>
         </div>
 
-        <ChatView open={chatOpen} onBack={() => onCloseChat?.()} />
+        <ChatView
+          open={chatOpen}
+          onBack={() => onCloseChat?.()}
+          messages={chatMessages}
+          loading={chatLoading}
+          onSend={(content) => onSendMessage?.(content)}
+        />
       </div>
     </div>
   );
@@ -917,6 +943,7 @@ function PrimaryField({
   onOpen,
   listboxOpen,
   collapsed,
+  suppressHover,
 }: {
   aiMode: boolean;
   query: string;
@@ -930,12 +957,16 @@ function PrimaryField({
   onOpen: () => void;
   listboxOpen: boolean;
   collapsed: boolean;
+  /** The pinned, thin collapsed bar (not the modal it opens into, which
+   * stays fully hoverable) has no room for the hover pill to read as
+   * anything but a stray flash — see the same prop on TripField. */
+  suppressHover?: boolean;
 }) {
   return (
     <div
       ref={fieldRef}
       className={`hero-primary-field -ml-[21px] -mr-4 flex h-[52px] min-w-0 basis-0 flex-col items-start justify-center gap-1 rounded-[20px] pl-[21px] pr-4 transition-colors ${
-        active ? "" : "hover:bg-surface"
+        active || suppressHover ? "" : "hover:bg-surface"
       }`}
     >
       <div className="grid w-full">
@@ -1040,6 +1071,7 @@ function TripField({
   onMouseEnter,
   onMouseLeave,
   collapsed,
+  suppressHover,
 }: {
   label: string;
   value: string;
@@ -1064,8 +1096,17 @@ function TripField({
   /** Darkens the unfilled/placeholder value text to match the applied
    * style — see PrimaryField's doc comment for why (Figma 33325:31409). The
    * caller also swaps `value` itself to "Edit ..." copy when this is true;
-   * this prop only controls color/weight, not the string. */
+   * this prop only controls color/weight, not the string. Deliberately the
+   * RAW collapsed prop rather than effectivelyCollapsed — this copy still
+   * says "Edit ..." even with the modal open, since editing via the modal is
+   * still editing the current search. suppressHover below is the one that
+   * needs the modal-aware value instead. */
   collapsed?: boolean;
+  /** effectivelyCollapsed, not collapsed — see PrimaryField's own doc
+   * comment for the same distinction. The pinned bar has no room for the
+   * hover pill to read as anything but a stray flash; the modal it opens
+   * into is the full-size form and should hover normally. */
+  suppressHover?: boolean;
 }) {
   return (
     <button
@@ -1076,7 +1117,7 @@ function TripField({
       onMouseLeave={onMouseLeave}
       style={{ flexGrow: grow }}
       className={`-mx-4 flex h-[52px] min-w-0 basis-0 cursor-pointer flex-col items-start justify-center gap-1 rounded-[20px] px-4 text-left transition-colors ${
-        overlayControlled || active ? "" : "hover:bg-surface"
+        overlayControlled || active || suppressHover ? "" : "hover:bg-surface"
       }`}
     >
       <span className="truncate font-display text-[12px] tracking-[-0.24px] text-neutral-500">

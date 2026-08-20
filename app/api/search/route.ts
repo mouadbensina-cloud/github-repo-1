@@ -195,6 +195,14 @@ export async function GET(request: NextRequest) {
       guestNationality,
       maxRatesPerHotel: 1,
       limit: CANDIDATE_LIMIT,
+      // liteApiRequest's own default (4000ms) is tuned for a single-hotel
+      // call — this one prices up to CANDIDATE_LIMIT (200) hotels in one
+      // request and was measurably slower, timing out under real load even
+      // though the upstream call was still progressing. 10000 is the
+      // client's own ceiling (see MAX_TIMEOUT_MS in lib/liteapi.ts); every
+      // other call in this codebase that fans out this wide (getHotelDetail,
+      // getHotelReviews) already overrides the default the same way.
+      timeoutMs: 10000,
       // The sandbox key is rate-limited (5 req/window as of this writing) and
       // a rates call is slow, so identical searches — a shared link opened
       // twice, a dev-mode effect double-invoke, a back-navigation — reuse one
